@@ -1,28 +1,57 @@
 <!DOCTYPE html>
 <html lang="uk">
-
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Чат на WebSocket</title>
-    <style>
-        .system-msg { color: gray; font-style: italic; font-size: 0.9em; }
-        .user-msg { margin: 5px 0; }
-        #status { font-size: 0.8em; margin-left: 10px; }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
-    <h2>Чат <span id="status" style="color: red;">(Відключено)</span></h2>
-    <div id="chat" style="border: 1px solid #ccc; height: 300px; overflow-y: scroll; padding: 10px; margin-bottom: 10px;"></div>
-    <input id="message" placeholder="Введіть повідомлення">
-    <button onclick="sendMessage()">Надіслати</button>
-    <button onclick="requestNotificationPermission()">Увімкнути сповіщення</button>
+    <div class="chat-container">
+        <header>
+            <h2>WebSocket Чат</h2>
+            <div class="status-badge">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Відключено</span>
+            </div>
+        </header>
+        
+        <div id="chat">
+        </div>
+
+        <div style="padding: 0 15px;">
+            <button onclick="requestNotificationPermission()" class="notification-btn">Дозволити сповіщення</button>
+        </div>
+
+        <div class="controls">
+            <button id="disconnectBtn" onclick="disconnectFromChat()" title="Відключитися" disabled>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                    <line x1="12" y1="2" x2="12" y2="12"></line>
+                </svg>
+            </button>
+            <input id="message" placeholder="Напишіть повідомлення..." autocomplete="off">
+            <button id="sendBtn" onclick="sendMessage()" title="Надіслати">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+            </button>
+        </div>
+    </div>
 
     <script>
         let socket;
+        let myUserId = null;
+        let isManualDisconnect = false; 
+
         const chat = document.getElementById('chat');
-        const statusSpan = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const statusDot = document.getElementById('statusDot');
         const messageInput = document.getElementById('message');
+        const sendBtn = document.getElementById('sendBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
 
         function requestNotificationPermission() {
             if (Notification.permission !== "granted") {
@@ -30,27 +59,60 @@
             }
         }
 
+        function updateStatus(text, color) {
+            statusText.innerText = text;
+            statusDot.style.backgroundColor = color;
+            
+            if (color === 'green' || color === '#2ecc71') {
+                statusDot.style.boxShadow = "0 0 5px #2ecc71";
+            } else {
+                statusDot.style.boxShadow = "none";
+            }
+        }
+
         function connect() {
+            isManualDisconnect = false;
+            toggleInputs(true);
+            
             socket = new WebSocket('ws://localhost:3000');
 
             socket.onopen = () => {
-                statusSpan.innerText = "(Підключено)";
-                statusSpan.style.color = "green";
+                updateStatus("У мережі", "#2ecc71"); 
+                disconnectBtn.disabled = false; 
                 addMessageToChat("З'єднання встановлено", true);
             };
 
             socket.onmessage = (event) => {
+                const processData = (text) => {
+                    try {
+                        if (text.startsWith('{') && text.includes('"type":"system"')) {
+                            const data = JSON.parse(text);
+                            if (data.action === 'init' && data.id) {
+                                myUserId = data.id;
+                                console.log("Мій ID:", myUserId);
+                                return;
+                            }
+                        }
+                    } catch (e) {}
+                    handleMessage(text);
+                };
+
                 if (typeof event.data === 'string') {
-                    handleMessage(event.data);
+                    processData(event.data);
                 } else {
-                    event.data.text().then(text => handleMessage(text));
+                    event.data.text().then(text => processData(text));
                 }
             };
 
             socket.onclose = (event) => {
-                statusSpan.innerText = "(Відключено. Спроба відновлення...)";
-                statusSpan.style.color = "red";
-                setTimeout(connect, 3000);
+                if (isManualDisconnect) {
+                    updateStatus("Відключено", "gray");
+                    disconnectBtn.disabled = true;
+                } else {
+                    updateStatus("З'єднання...", "#f1c40f"); 
+                    disconnectBtn.disabled = true;
+                    setTimeout(connect, 3000);
+                }
             };
 
             socket.onerror = (error) => {
@@ -60,11 +122,11 @@
         }
 
         function handleMessage(text) {
-            const isSystem = text.startsWith('>>>') || text.startsWith('<<<');
+            const isSystem = text.startsWith('>>>') || text.startsWith('<<<') || text.includes('приєднався');
             addMessageToChat(text, isSystem);
 
             if (document.hidden && Notification.permission === "granted" && !isSystem) {
-                new Notification("Нове повідомлення в чаті", {
+                new Notification("Нове повідомлення", {
                     body: text,
                     icon: "https://cdn-icons-png.flaticon.com/512/134/134914.png" 
                 });
@@ -74,18 +136,56 @@
         function addMessageToChat(text, isSystem = false) {
             const newMessage = document.createElement('div');
             newMessage.innerText = text;
-            newMessage.className = isSystem ? 'system-msg' : 'user-msg';
+            newMessage.className = isSystem ? 'message system-msg' : 'message user-msg';
             chat.appendChild(newMessage);
             chat.scrollTop = chat.scrollHeight; 
         }
 
         function sendMessage() {
-            const message = messageInput.value;
+            const message = messageInput.value.trim();
             if (message && socket.readyState === WebSocket.OPEN) {
                 socket.send(message);
                 messageInput.value = '';
+                messageInput.focus();
+            } else if (!message) {
             } else {
                 alert("Немає з'єднання з сервером");
+            }
+        }
+
+        function disconnectFromChat() {
+            if (!myUserId) {
+                alert("Помилка: ID користувача не знайдено.");
+                return;
+            }
+            disconnectBtn.disabled = true;
+
+            fetch(`http://localhost:3000/disconnect?id=${myUserId}`)
+                .then(response => {
+                    if (response.ok) {
+                        isManualDisconnect = true;
+                        addMessageToChat("Ви успішно відключились", true);
+                        toggleInputs(false);
+                    } else {
+                        response.text().then(text => alert("Помилка сервера: " + text));
+                        disconnectBtn.disabled = false;
+                    }
+                })
+                .catch(err => {
+                    console.error("Помилка запиту:", err);
+                    alert("Не вдалося виконати запит на відключення.");
+                    disconnectBtn.disabled = false;
+                });
+        }
+
+        function toggleInputs(enable) {
+            messageInput.disabled = !enable;
+            sendBtn.disabled = !enable;
+            
+            if (!enable) {
+                messageInput.placeholder = "Ви відключені від чату";
+            } else {
+                messageInput.placeholder = "Напишіть повідомлення...";
             }
         }
 
@@ -98,5 +198,4 @@
         connect();
     </script>
 </body>
-
 </html>
